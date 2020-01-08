@@ -1,0 +1,319 @@
+---
+title: "EXST 7151"
+author: "Alex Tryforos"
+date: "12/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+Perform a Bayesian Simple Linear Regression using height to predict weight.
+<br><br>
+Data was collected on 30 US males in pounds/inches. (source: Kaggle)
+
+```{r}
+library(msm)
+colors = c("red","blue","green") #colors for intercept, slope, and variance respectively
+```
+
+#Model
+<br>
+$y_i$ = $\beta_0$ + $\beta_1$X + $\epsilon_i$, $\epsilon_i$ ~ N(0, $\sigma^2$)
+<br><br>
+When x is uncentered, $\beta_0$  has the interpretation in SLR of $\textit{"When x is 0, the expected value of y is}$ $\beta_0$", pending that 0 is in the range of the x data.
+<br><br>
+This has little real world application in the context of my problem since height can never be 0. However, centering the x data (height) allows the interpretation of $\beta_0$ to take on a new meaning.
+<br><br>
+Thus, we can **center** x by subracting the avergage height from all heights.
+<br><br>
+Thus, $\beta_0$ now has the interpretation of $\textit{"When x is at its mean (0), the expected value of y is}$ $\beta_0$".
+<br><br><br>
+```{r}
+data = read.csv("Data_FinalProject.csv") #39 observations of Height/Weight Data for men
+x = data$Height #Create data vector for height
+y = data$Weight #Create data vector for weight
+#Intercept currently has meaning of "When weight is 0, average height is -intercept-"
+x = scale(x,center=TRUE,scale=FALSE) #center the data to change interpretation of intercept
+#Intercept NOW has meaning of "When weight is at the mean, average height is -intercept-"
+```
+
+#Prior for intercept ($\beta_0$)
+<br>
+We know the intercept **must** be positive (since when height is at its mean, weight must be greater than 0).
+<br><br>
+Thus, I chose a Gamma prior on $\beta_0$ since the support is [0,$\infty$).
+<br><br>
+For choosing the shape ($\alpha$) and rate($\beta$) parameters, I found that the average weight for an American is 175. This seems to be a reasonable mean for the Gamma prior (note: $\beta_0$ is the average weight **when height is at its average**, not just simply the average weight.)
+<br><br>
+Additionally, I was 95% certain that $\beta_0$ would be between [150,200]. The $\alpha$ and $\beta$ that satisfy this condition are 183.93 and 1.0625.
+<br><br>
+Thus, $\beta_0$ ~ Gamma(183.93,1.0625)
+<br><br>
+E($\beta_0$) = 175 & Var($\beta_0$) = 162.9276
+<br><br><br>
+```{r}
+#Iterative process using monte carlo approximation to find choice of prior
+set.seed(1)
+#Step 1, Select shape parameter
+shape_B0 = 185.93 #prior shape
+#Step 2, Select rate parameter that satisfies shape/rate = 175
+rate_B0 = 1.0625 #prior rate
+#Step 3, Generate Random Data
+sample=rgamma(10000,shape=shape_B0,rate=rate_B0) 
+#Step 4, calculate probability between 150 & 200, want to be approximately 0.99
+mean(sample>150 & sample<200)
+#Creating prior function for MCMC
+prior_B0 = function(B0,shape_B0,rate_B0){
+  dgamma(B0,shape = shape_B0, rate = rate_B0)
+}
+```
+```{r echo=FALSE}
+curve(dgamma(x,shape_B0,rate=rate_B0),xlim = c(0,270),xlab = "Intercept (B0)", ylab = "Density", main ="Gamma Prior", col=colors[1])
+```
+
+
+
+#Prior for slope ($\beta_1$)
+<br>
+$\beta_1$ will be much closer to 0 since its interpretation is "The average increase in weight, when height is increased by 1 unit."
+<br><br>
+There is valid reason to assume that the slope must be positive. However, I did not want to impose the restriction and wanted our model to allow the data to speak. Thus, I chose a normal prior on $\beta_1$ allowing for both postive **and** negative values.
+<br><br>
+I would like the mean of the prior on slope to be 8 with a standard devation of 5. Intuitively, if I was to increase someones height by 1 inch, I would expect their weight to increase by roughly 8 pounds. A standard deviation of 5 is quite large representing my uncertainty.
+<br><br>
+Thus, $\beta_1$ ~ N(8,5)
+<br><br>
+E($\beta_1$) = 8 & Var($\beta_1$) = 25 (~95 % certain $\beta_1$ is between [-3,18])
+<br><br><br>
+```{r}
+#slope prior (normal)
+#would like mean of slope to be 8 (increase inch by 1 unit leads 
+#to a 8 pound increase, on average, in weight)
+mu_B1 = 8 #prior mean
+sd_B1 = 5 #prior sd
+#Prior function for MCMC
+prior_B1 = function(B1,mu_B1,sd_B1){
+  dnorm(B1,mu_B1,sd_B1)
+}
+```
+```{r echo=FALSE}
+curve(dnorm(x,mean=mu_B1,sd = sd_B1),xlim = c(mu_B1-2.5*sd_B1,mu_B1+2.5*sd_B1),xlab = "Slope (B1)", ylab = "Density", main = "Normal Prior", col=colors[2])
+```
+
+#Prior for variance ($\sigma^2$)
+<br>
+$\sigma^2$ **must** be positive thus a Gamma prior can be appropriate. Although, I have little information outside of this. Choosing a prior with a non-informative prior with a large variance (diffuse prior) seems most reasonable.
+<br><br>
+Thus, $\sigma^2$ ~ Gamma(.5,.01).
+<br><br>
+E($\sigma^2$) = 50 & Var($\sigma^2$) = 5000
+<br><br><br>
+```{r}
+#variance prior (gamma)
+shape_var = .5 #prior mean
+rate_var = .01 #prior sd
+#Prior function for MCMC
+prior_var = function(var,shape_var,rate_var){
+  dgamma(var,shape=shape_var,rate=rate_var)
+}
+```
+
+```{r}
+curve(dgamma(x,shape_var,rate=rate_var),xlim = c(0,1000),xlab = "Variance", ylab = "Density", main ="Gamma Prior", col=colors[3])
+```
+While still slightly skewed to the right, this prior has such a large variance that w
+
+#Liklihood
+$y_i$ ~ N($\beta_0$ + $\beta_1$$X_i$, $\sigma^2$)
+<br>
+```{r fig.width=4, fig.height=1.5}
+library(png)
+library(grid)
+img_lik <- readPNG("Liklihood-Function.png")
+grid.raster(img_lik)
+```
+
+```{r}
+liklihood = function(y,x,theta_B0 ,theta_B1,theta_var){
+  sum(dnorm(y,theta_B0+theta_B1*x,sqrt(theta_var)))
+}
+```
+#Prior Predictive Check
+Using a prior predictive check is one way to examine what our model believes **before** it has seen any data. I sampled an intercept and slope randomly from each respective prior distribution and plotted the lines.
+```{r include=TRUE}
+#prior predictive check
+intercept = c()
+slope = c()
+plot(y~x,cex=0.0001, ylim=c(100,300))
+for (i in 1:15) {
+  intercept[i] = rgamma(1,shape=shape_B0,rate=rate_B0)
+  slope[i] = rnorm(1,mean=mu_B1,sd=sd_B1)
+  abline(a=intercept[i],b=slope[i],col="black")
+}
+```
+<br><br>
+The prior predictive check yields lines that appear **reasonable** given our prior knowledge about the world. While we can only examine the plausibility of our prior for 2 of 3 parameters (interept & slope) using a prior predictive check, it is still a useful exercise.
+<br><br><br>
+
+#MCMC
+<br>
+```{r}
+#Housekeeping for MCMC
+theta_B0 = 175 #initial value for B0 (intercept), chosen as mean of prior
+theta_B1 = 8 #intial value for B1 (slope), chosen as mean of prior
+theta_var = 100 # inital value for variance, chosen as mean of prior
+
+n.sim = 15000 #number of iterations during MCMC
+
+n.accept_B0 = 0 #initialize acceptance count for intercept
+n.accept_B1 = 0 #initialize acceptance count for slope
+n.accept_var = 0 #initialize acceptance count for variance
+
+delta_B0 = 27 #sd of proposal distribution for intercept, 50 got 30%
+delta_B1 = 11.25 #sd of proposal distribution for slope, 15 got 30%
+delta_var = 90 #sd of proposal distribution for variance, 25 got 30%
+
+int_mcmc = NULL #vector to store intercept values during MCMC
+slope_mcmc = NULL #vector to store slope values during MCMC
+var_mcmc = NULL #vector to store variance values during MCMC
+```
+
+```{r}
+#MCMC
+for (ite in 1:n.sim) {
+  ################ Metropolis-Hastings within GIBBS for intercept  ################### 
+  #proposal for intercept
+  int.star = rtnorm(1,mean=theta_B0,sd=delta_B0,lower = 0, upper = 1300) #upper bound as 1300 since heaviest person in history is 1300
+  #calculate posterior density ratio
+  post_B0 = (prior_B0(B0 = int.star,shape_B0,rate_B0)*liklihood(y,x,int.star ,theta_B1,theta_var))/
+    (prior_B0(B0 = theta_B0,shape_B0,rate_B0)*liklihood(y,x,theta_B0 ,theta_B1,theta_var))
+  #calculate proposal density ratio
+  proposal_B0 = dtnorm(theta_B0,mean=int.star,sd=delta_B0,lower = 0, upper = 1300)/
+    dtnorm(int.star,mean=theta_B0,sd=delta_B0,lower = 0, upper = 1300)
+  #calculate acceptance probability
+  alpha_int = min(1,post_B0*proposal_B0)
+  #Accept or reject proposal?
+  r = runif(1)
+  if (r<alpha_int){ #if accepted
+    theta_B0 = int.star #update current position of theta_B0 to proposed position
+    n.accept_B0 = n.accept_B0 + 1 #updaate number of acceptance of intercept
+  }
+  int_mcmc = c(int_mcmc,theta_B0) #update int_mcmc vector
+  
+  ###################### Metropolis within GIBBS for slope  ###################### 
+  #proposal for slope
+  slope.star = rnorm(1,mean=theta_B1,sd=delta_B1)
+  #calculate posterior density ratio
+  post_B1 = (prior_B1(B1 = slope.star,mu_B1,sd_B1)*liklihood(y,x,theta_B0 ,theta_B1=slope.star,theta_var))/
+    (prior_B1(B1 = theta_B1,mu_B1,sd_B1)*liklihood(y,x,theta_B0 ,theta_B1,theta_var))
+  #calculate acceptance probability
+  alpha_slope = min(1,post_B1)
+  #Accept or reject proposal?
+  r = runif(1)
+  if (r<alpha_slope){ #if accepted
+    theta_B1 = slope.star #update current position of theta_B1 to proposed position
+    n.accept_B1 = n.accept_B1 + 1 #updaate number of acceptance of slope
+  }
+  slope_mcmc = c(slope_mcmc,theta_B1) #update slope_mcmc vector
+  
+  ################ Metropolis-Hastings within GIBBS for variance  ################### 
+  #proposal for variance
+  var.star = rtnorm(1,mean=theta_var,sd=delta_var,lower = 0)
+  #calculate posterior density ratio
+  post_var = (prior_var(var = var.star,shape_var,rate_var)*liklihood(y,x,theta_B0 ,theta_B1,theta_var=var.star))/
+    (prior_var(var = theta_var,shape_var,rate_var)*liklihood(y,x,theta_B0 ,theta_B1,theta_var))
+  #calculate proposal density ratio
+  proposal_var = dtnorm(theta_var,mean=var.star,sd=delta_var,lower = 0)/
+    dtnorm(var.star,mean=theta_var,sd=delta_var,lower = 0)
+  #calculate acceptance probability
+  alpha_var = min(1,post_var*proposal_var)
+  #Accept or reject proposal?
+  r = runif(1)
+  if (r<alpha_var){ #if accepted
+    theta_var = var.star #update current position of theta_var to proposed position
+    n.accept_var = n.accept_var + 1 #updaate number of acceptance of intercept
+  }
+  var_mcmc = c(var_mcmc,theta_var) #update var_mcmc vector
+}
+
+```
+Given these choices of priors and normal liklihood, there is no closed form posterior distribution. Thus, MCMC methods will allows us to summarize all 3 posterior distributions.
+<br><br>
+I will use the Metropolis algorithm (slope) and Metropolis-Hastings algorithm (intercept and variance) within a Gibbs. For $\beta_1$, the proposal distribution will be a normal. For $\beta_0$ and $\sigma^2$, the proposal distribution will be a truncated normal with a lower bound of 0 since each parameter space is only positive.
+<br><br>
+Although not a requirement, I chose an upper bound on the proposal distribution for $\beta_0$ as 1300 since this is the heaviest recorded weight in human history, meaning that $\beta_0$ will not be greater than 1300. I left the upper bound on the proposal distribution for $\sigma^2$ as $\infty$ since I have no knowledge of a reasonable upper bound for the truncated normal.
+<br><br>
+I ran 15,000 iterations of M/MH within a Gibbs sampler.
+```{r}
+#Checking acceptance rates & trace plots
+theta.mcmc = list(int_mcmc,slope_mcmc,var_mcmc) #MCMC vector
+names(theta.mcmc) = c("Intercept","Slope","Variance")
+a = c(n.accept_B0,n.accept_B1,n.accept_var)/n.sim #acceptance rate vector
+names(a) = c("Intercept","Slope","Variance")
+for (i in 1:length(a)) {
+  plot(theta.mcmc[[i]],type = "l", main = paste("Trace Plot for", names(theta.mcmc)[i]), xlab = "Iteration", ylab=paste(names(a)[i]), col=colors[i])
+  print(paste("The acceptance rate for", names(a)[i], "is", round(a[i],digits = 2)))
+}
+```
+
+```{r}
+#burn in period of 3000
+burnin = 3000
+int_mcmc <- int_mcmc[(burnin+1):n.sim]
+slope_mcmc <- slope_mcmc[(burnin+1):n.sim]
+var_mcmc <- var_mcmc[(burnin+1):n.sim]
+```
+
+```{r}
+for (i in 1:length(theta.mcmc)) {
+  print(paste("----------------- Posterior Information on: The",names(theta.mcmc[i]),"----------------"))
+  print(paste("The 95 % credible interval for the",names(theta.mcmc)[i]," is from",round(quantile(theta.mcmc[[i]],c(.025,.975))[1],digits=2), "to", round(quantile(theta.mcmc[[i]],c(.025,.975))[2],digits=2), "."))
+  print(paste("The 99 % credible interval for the",names(theta.mcmc)[i]," is from",round(quantile(theta.mcmc[[i]],c(.005,.995))[1],digits=2), "to", round(quantile(theta.mcmc[[i]],c(.005,.995))[2],digits=2), "."))
+  print(paste("The mean of the of posterior distribution for the",names(theta.mcmc)[i],"is: ", round(mean(theta.mcmc[[i]]),digits=3), "."))
+  print(paste("The median of the of posterior distribution for the",names(theta.mcmc)[i],"is: ", round(median(theta.mcmc[[i]]),digits=3), "."))
+  print(paste("The variance of the of posterior distribution for the",names(theta.mcmc)[i]," is: ", round(var(theta.mcmc[[i]]),digits=3), "."))
+  hist(theta.mcmc[[i]], main=paste("Histogram of",names(theta.mcmc)[i]), xlab = "", col=colors[i])
+}
+```
+
+#'Final' Model
+<br><br>
+Recall, $y_i$ = $\beta_0$ + $\beta_1$X + $\epsilon_i$, $\epsilon_i$ ~ N(0, $\sigma^2$)
+<br><br>
+The posterior distributions of $\beta_0$, $\beta_1$, and $\sigma^2$ produce infinitely many possible values for each parameter. Thus, if we would like **only one** value, as opposed to distrbution of values, we would need to select a point estimate from this distribution as a "best guess".
+<br><br>
+Selecting the mean of each posterior would minimized the L2 norm (squared difference) while selecting the median of each posterior would minimized the L1 norm (absolute difference). I will choose to minimize the L2 norm.
+<br><br>
+Additionally, I would like to compare my 'final model' to OLS from a frequentist perspective. **Note: $\hat(\sigma^2)$ is an estimate of Mean Squared Error.** 
+```{r}
+freqmodel = lm(y~x)
+fc = c(freqmodel$coefficients, sum(freqmodel$residuals^2)/(length(freqmodel$residuals)-length(freqmodel$coefficients)))
+names(fc) = c("Intercept", "Slope", "Mean Squared Error")
+bc = c(mean(int_mcmc),mean(slope_mcmc),mean(var_mcmc))
+names(bc) = c("Intercept", "Slope", "Variance")
+for (i in 1:length(fc)) {
+  print(paste("The Frequentist estimate for", names(fc)[i], "is: ", round(fc[i],digits = 2)))
+}
+print("-------------------------------------------------------")
+for (i in 1:length(fc)) {
+  print(paste("A Bayesian estimate for", names(bc)[i], "is: ", round(bc[i],digits = 2)))
+}
+```
+<br>
+<br>
+<br>
+
+#Conclusions
+
+<br>
+<br>
+The Frequntist and this Bayesian estimate for intercept and slope are quite close (in this instance). However, the estimate for variance are quite different.
+<br><br>
+Centering the x data allowed for an alternate choice of prior since the parameter space for $\beta_0$ changed.
+<br><br>
+Prior predictive checks are a good way to see what a model believes before it has seen any data.
+<br><br>
+Choosing **different** point estimates from the posteriors result in a **different** 'final' model choice.
